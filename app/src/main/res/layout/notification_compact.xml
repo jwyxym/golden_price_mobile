@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	android:layout_width="match_parent" android:layout_height="48dp"
+	android:orientation="horizontal" android:gravity="center_vertical" android:background="#10141C" android:padding="4dp">
+	<TextView android:id="@+id/notification_price" android:layout_width="130dp"
+		android:layout_height="wrap_content" android:textColor="#FFE600" android:textSize="16sp" android:maxLines="1" />
+	<ImageView android:id="@+id/notification_chart" android:layout_width="0dp" android:layout_weight="1"
+		android:layout_height="40dp" android:scaleType="fitXY" android:contentDescription="@string/compact_chart_description" />
+</LinearLayout>

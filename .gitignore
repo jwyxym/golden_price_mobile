@@ -1,0 +1,11 @@
+.gradle/
+/gradle/
+/gradlew
+/gradlew.bat
+.kotlin/
+**/build/
+local.properties
+*.jks
+*.keystore
+.idea/
+*.iml

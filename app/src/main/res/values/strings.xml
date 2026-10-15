@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<string name="app_name">黄金行情</string>
+	<string name="chart_description">黄金价格走势图</string>
+	<string name="compact_chart_description">黄金价格走势预览</string>
+</resources>

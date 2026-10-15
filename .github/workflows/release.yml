@@ -1,0 +1,127 @@
+name: Build and release Android APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '9.6.1'
+
+      - name: Initialize Gradle Wrapper
+        run: gradle wrapper --gradle-version 9.6.1 --distribution-type bin --console=plain
+
+      - name: Build release APK and run checks
+        run: bash ./gradlew :app:assembleRelease :app:testDebugUnitTest :app:lintRelease --console=plain
+
+      - name: Fetch signing certificate and sign APK
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KEYSTORE_REPO: ${{ secrets.KEYSTORE_REPO }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SSH_PRIVATE_KEY:?Missing SSH_PRIVATE_KEY secret}"
+          : "${KEYSTORE_REPO:?Missing KEYSTORE_REPO secret}"
+          : "${KEY_ALIAS:?Missing KEY_ALIAS secret}"
+          : "${KEYSTORE_PASSWORD:?Missing KEYSTORE_PASSWORD secret}"
+
+          signing_dir="$RUNNER_TEMP/golden-price-signing"
+          mkdir -p "$signing_dir" dist
+          chmod 700 "$signing_dir"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$signing_dir/id_ed25519"
+          chmod 600 "$signing_dir/id_ed25519"
+          curl --fail --silent --show-error https://api.github.com/meta \
+            | jq -er '.ssh_keys[] | "github.com " + .' > "$signing_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i \"$signing_dir/id_ed25519\" -o IdentitiesOnly=yes -o UserKnownHostsFile=\"$signing_dir/known_hosts\" -o StrictHostKeyChecking=yes"
+          git clone --depth 1 -- "$KEYSTORE_REPO" "$signing_dir/keystore"
+
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$build_tools/zipalign" -P 16 -f 4 \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            "$signing_dir/app-aligned.apk"
+          "$build_tools/apksigner" sign \
+            --ks "$signing_dir/keystore/golden.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --key-pass env:KEYSTORE_PASSWORD \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --out dist/GoldenPrice.apk \
+            "$signing_dir/app-aligned.apk"
+          "$build_tools/apksigner" verify --verbose dist/GoldenPrice.apk
+          "$build_tools/zipalign" -c -P 16 4 dist/GoldenPrice.apk
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/golden-price-signing"
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldenPrice-apk
+          path: dist/GoldenPrice.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: GoldenPrice-apk
+          path: dist
+
+      - name: Publish release-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release list --json tagName --limit 100 > releases.json
+          if jq -e 'any(.[]; .tagName == "release-latest")' releases.json > /dev/null; then
+            gh release delete release-latest --cleanup-tag --yes
+          fi
+          gh release create release-latest dist/GoldenPrice.apk \
+            --target "$GH_SHA" \
+            --title "Golden Price Android · Latest" \
+            --notes "Signed release APK built from commit $GH_SHA." \
+            --latest
